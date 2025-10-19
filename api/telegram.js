@@ -10,233 +10,208 @@ const STAFF_CHAT_ID = process.env.STAFF_CHAT_ID;
 
 const sessions = {};
 
-// 🟢 تابع ارسال پیام
+// ارسال پیام به کاربر
 async function sendMessage(chatId, text, keyboard) {
   const body = {
     chat_id: chatId,
     text,
-    reply_markup: keyboard
-      ? { keyboard, resize_keyboard: true, one_time_keyboard: true }
-      : undefined,
+    reply_markup: keyboard ? { keyboard, resize_keyboard: true, one_time_keyboard: true } : undefined,
   };
   await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
 }
 
-// 🗓️ تابع ساخت لیست تاریخ‌های شمسی ۷ روز آینده (بدون جمعه)
-function getNext7Days() {
-  const days = [];
-  const base = new Date();
-  const weekdayNames = ["یک‌شنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنج‌شنبه", "جمعه", "شنبه"];
+// تبدیل ارقام فارسی/عربی به لاتین
+function normalizeDigits(str) {
+  const map = { '۰':'0','۱':'1','۲':'2','۳':'3','۴':'4','۵':'5','۶':'6','۷':'7','۸':'8','۹':'9',
+                '٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9' };
+  return (str || '').replace(/[۰-۹٠-٩]/g, d => map[d]);
+}
 
-  while (days.length < 7) {
-    base.setDate(base.getDate() + 1);
-    const day = base.getDay(); // 5 = جمعه
-    if (day !== 5) {
-      const gYear = base.getFullYear();
-      const gMonth = base.getMonth() + 1;
-      const gDay = base.getDate();
-      // محاسبه‌ی تقریبی به شمسی (ساده و نزدیک به واقع)
-      const persian = toPersianDate(gYear, gMonth, gDay);
-      const label = `${weekdayNames[day]} (${persian})`;
-      days.push([label]);
+// ساخت رشتهٔ تاریخ شمسی به صورت YYYY/MM/DD با ارقام لاتین
+function toJalaliYMD(date) {
+  const fmt = new Intl.DateTimeFormat('fa-IR-u-ca-persian', { year:'numeric', month:'2-digit', day:'2-digit' });
+  const parts = fmt.formatToParts(date);
+  const y = normalizeDigits(parts.find(p => p.type === 'year').value);
+  const m = normalizeDigits(parts.find(p => p.type === 'month').value).padStart(2, '0');
+  const d = normalizeDigits(parts.find(p => p.type === 'day').value).padStart(2, '0');
+  return `${y}/${m}/${d}`;
+}
+
+// ساخت ۷ تاریخ کاری بعدی (بدون جمعه) به‌صورت دکمه‌های تک‌ستونی
+function getNextWorkingJalaliDates(count = 7) {
+  const rows = [];
+  const dt = new Date(); // امروز؛ مثال شما: 27 مهر 1404 ≈ 2025-10-19
+  while (rows.length < count) {
+    dt.setDate(dt.getDate() + 1);
+    const isFriday = dt.getDay() === 5; // جمعه
+    if (!isFriday) {
+      const j = toJalaliYMD(dt);
+      rows.push([j]); // دکمه فقط خود تاریخ باشد
     }
   }
-  return days;
+  return rows;
 }
 
-// 🔢 تابع تبدیل ساده میلادی به شمسی (بدون وابستگی به کتابخانه)
-function toPersianDate(gYear, gMonth, gDay) {
-  const g2d = (y, m, d) => {
-    const GY = y - 1600;
-    const GM = m - 1;
-    const GD = d - 1;
-    const gDayNo =
-      365 * GY +
-      Math.floor((GY + 3) / 4) -
-      Math.floor((GY + 99) / 100) +
-      Math.floor((GY + 399) / 400);
-    const gMonthDays = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    for (let i = 0; i < GM; ++i) gDayNo += gMonthDays[i];
-    if (GM > 1 && ((GY % 4 === 0 && GY % 100 !== 0) || GY % 400 === 0)) gDayNo++;
-    return gDayNo + GD;
-  };
-
-  let jDayNo = g2d(gYear, gMonth, gDay) - 79;
-  const jCycle = Math.floor(jDayNo / 12053);
-  jDayNo %= 12053;
-  let jYear = 979 + 33 * jCycle + 4 * Math.floor(jDayNo / 1461);
-  jDayNo %= 1461;
-  if (jDayNo >= 366) {
-    jYear += Math.floor((jDayNo - 1) / 365);
-    jDayNo = (jDayNo - 1) % 365;
-  }
-  const jMonthDays = [31, 31, 31, 31, 31, 31, 30, 30, 30, 30, 30, 29];
-  let jMonth;
-  for (jMonth = 0; jMonth < 11 && jDayNo >= jMonthDays[jMonth]; ++jMonth)
-    jDayNo -= jMonthDays[jMonth];
-  const jDay = jDayNo + 1;
-  return `${jYear}/${String(jMonth + 1).padStart(2, "0")}/${String(jDay).padStart(2, "0")}`;
-}
-
-// 🧩 تابع اصلی
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(200).send("OK");
+  if (req.method !== 'POST') return res.status(200).send('OK');
   const body = await new Response(req).json();
   const message = body.message;
-  if (!message || !message.text) return res.status(200).send("No message");
+  if (!message || !message.text) return res.status(200).send('No message');
 
   const chatId = message.chat.id;
-  const text = message.text.trim();
+  const textRaw = message.text.trim();
+  const text = normalizeDigits(textRaw);
   const step = sessions[chatId]?.step || 0;
 
-  // شروع گفتگو
-  if (text === "/start") {
+  // شروع
+  if (text === '/start') {
     sessions[chatId] = { step: 1, data: {} };
-    await sendMessage(
-      chatId,
-      "👋 سلام! لطفاً *نام و نام خانوادگی* خود را وارد کنید (مثلاً: علی رضایی):"
-    );
-    return res.status(200).send("OK");
+    await sendMessage(chatId, '👋 سلام! لطفاً *نام و نام خانوادگی* خود را وارد کنید (مثلاً: علی رضایی):');
+    return res.status(200).send('OK');
   }
 
   if (!sessions[chatId]) {
-    await sendMessage(chatId, "برای شروع دوباره لطفاً /start را بزنید.");
-    return res.status(200).send("OK");
+    await sendMessage(chatId, 'برای شروع دوباره لطفاً /start را بزنید.');
+    return res.status(200).send('OK');
   }
 
   const user = sessions[chatId].data;
 
   switch (step) {
-    // نام
+    // 1) نام و نام خانوادگی
     case 1:
       if (text.length < 3) {
-        await sendMessage(chatId, "⚠️ لطفاً نام را درست وارد کنید (مثلاً: علی رضایی)");
+        await sendMessage(chatId, '⚠️ لطفاً نام و نام خانوادگی را درست وارد کنید (مثلاً: علی رضایی).');
         break;
       }
-      user.name = text;
+      user.name = textRaw; // نسخهٔ اصلی برای نمایش فارسی
       sessions[chatId].step = 2;
-      await sendMessage(chatId, "📱 لطفاً شماره موبایل خود را وارد کنید (مثلاً: 09123456789):");
+      await sendMessage(chatId, '📱 لطفاً شماره موبایل خود را وارد کنید (مثلاً: 09123456789):');
       break;
 
-    // شماره تماس
+    // 2) شماره موبایل
     case 2:
       if (!/^09\d{9}$/.test(text)) {
-        await sendMessage(chatId, "⚠️ شماره موبایل باید با 09 شروع شود و 11 رقم باشد.");
+        await sendMessage(chatId, '⚠️ شماره موبایل باید با 09 شروع شود و 11 رقم باشد (مثلاً: 09123456789).');
         break;
       }
       user.phone = text;
       sessions[chatId].step = 3;
-      await sendMessage(chatId, "🔧 لطفاً نوع خدمت مورد نظر را انتخاب کنید:", [
-        ["نوبت تعمیرگاه"],
-        ["نصب آپشن"],
-        ["سرویس دوره‌ای"],
+      await sendMessage(chatId, '🔧 لطفاً نوع خدمت مورد نظر را انتخاب کنید:', [
+        ['نوبت تعمیرگاه'],
+        ['نصب آپشن'],
+        ['سرویس دوره‌ای'],
       ]);
       break;
 
-    // نوع خدمت
+    // 3) نوع خدمت
     case 3:
-      user.service = text;
+      user.service = textRaw;
       sessions[chatId].step = 4;
-      await sendMessage(chatId, "🔢 لطفاً پلاک خودرو را وارد کنید (مثلاً: 22الف111):");
+      await sendMessage(chatId, '🔢 لطفاً پلاک خودرو را وارد کنید (مثلاً: 22الف111):');
       break;
 
-    // پلاک
+    // 4) پلاک
     case 4:
-      if (text.length < 5) {
-        await sendMessage(chatId, "⚠️ پلاک کوتاه است. لطفاً مثل نمونه وارد کنید (مثلاً: 22الف111)");
+      if (textRaw.length < 5) {
+        await sendMessage(chatId, '⚠️ پلاک کوتاه است. لطفاً مثل نمونه وارد کنید (مثلاً: 22الف111).');
         break;
       }
-      user.plate = text;
+      user.plate = textRaw;
       sessions[chatId].step = 5;
-      await sendMessage(chatId, "🏷️ لطفاً برند خودرو را انتخاب کنید:", [
-        ["MVM", "فونیکس"],
-        ["سایپا", "سایر"],
+      await sendMessage(chatId, '🏷️ لطفاً برند خودرو را انتخاب کنید:', [
+        ['MVM', 'فونیکس'],
+        ['سایپا', 'سایر'],
       ]);
       break;
 
-    // برند
+    // 5) برند
     case 5:
-      user.brand = text;
+      user.brand = textRaw;
       sessions[chatId].step = 6;
-      await sendMessage(chatId, "🚘 لطفاً مدل و سال خودرو را وارد کنید (مثلاً: FX 1403):");
+      await sendMessage(chatId, '🚘 لطفاً مدل و سال خودرو را وارد کنید (مثلاً: FX 1403):');
       break;
 
-    // مدل
+    // 6) مدل و سال
     case 6:
-      user.model = text;
+      if (textRaw.length < 2) {
+        await sendMessage(chatId, '⚠️ لطفاً مدل و سال را درست وارد کنید (مثلاً: FX 1403).');
+        break;
+      }
+      user.model = textRaw;
       sessions[chatId].step = 7;
-      await sendMessage(chatId, "📝 لطفاً ایراد یا توضیح لازم را بنویسید (مثلاً: صدای زیاد از موتور):");
+      await sendMessage(chatId, '📝 لطفاً ایراد یا توضیح لازم را بنویسید (مثلاً: سویچ رو گم کردم):');
       break;
 
-    // توضیح
+    // 7) توضیح
     case 7:
-      user.description = text;
+      user.description = textRaw;
       sessions[chatId].step = 8;
-      await sendMessage(chatId, "📆 لطفاً تاریخ مورد نظر خود را انتخاب کنید:", getNext7Days());
+      await sendMessage(chatId, '📆 لطفاً تاریخ مورد نظر خود را انتخاب کنید:', getNextWorkingJalaliDates());
       break;
 
-    // تاریخ
+    // 8) تاریخ (فقط از دکمه‌ها انتخاب شود)
     case 8:
-      if (!/^\d{4}\/\d{2}\/\d{2}$/.test(text) && !text.includes("۱۴۰")) {
-        await sendMessage(chatId, "⚠️ لطفاً تاریخ را از میان گزینه‌های پیشنهادی انتخاب کنید.");
+      if (!/^\d{4}\/\d{2}\/\d{2}$/.test(text)) {
+        await sendMessage(chatId, '⚠️ لطفاً تاریخ را از میان گزینه‌های پیشنهادی انتخاب کنید.');
         break;
       }
       user.date = text;
       sessions[chatId].step = 9;
-      await sendMessage(chatId, "⏰ لطفاً ساعت مورد نظر خود را وارد کنید (مثلاً: 8 یا 14 یا 14:30):");
+      await sendMessage(chatId, '⏰ لطفاً ساعت مورد نظر را وارد کنید (مثلاً: 8 یا 14 یا 14:30):');
       break;
 
-    // ساعت
+    // 9) ساعت (قبول: 8 | 14 | 14:30)
     case 9:
       if (!/^\d{1,2}(:\d{2})?$/.test(text)) {
-        await sendMessage(chatId, "⚠️ لطفاً ساعت را درست وارد کنید (مثلاً: 8 یا 14:30)");
+        await sendMessage(chatId, '⚠️ لطفاً ساعت را درست وارد کنید (مثلاً: 8 یا 14 یا 14:30).');
         break;
       }
       user.time = text;
       sessions[chatId].step = 0;
 
-      // ارسال به گوگل شیت
+      // ارسال به Google Sheet (ترتیب باید با Apps Script هماهنگ باشد)
       await fetch(APPSCRIPT_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(user),
       });
 
-      // پیام گروه کارشناسان با فاصله‌گذاری
-      const summary = 
+      // پیام گروه با قالب خواسته‌شده و فاصله بین خطوط (بدون Markdown)
+      const summary =
 `📋 رزرو جدید ثبت شد: 
 
-👤 نام و نام خانوادگی: ${user.name}
+👤 نام و نام خانوادگی:  ${user.name}
 
-📞 شماره تماس: ${user.phone}
+📞 شماره تماس:  ${user.phone}
 
-🔧 خدمت درخواستی: ${user.service}
+🔧 خدمت درخواستی:  ${user.service}
 
-🚗 خودرو: ${user.brand} - ${user.model}
+🚗 خودرو :  ${user.brand} - ${user.model}
 
-🔢 پلاک: ${user.plate}
+🔢 پلاک:  ${user.plate}
 
-📝 ایراد / توضیحات: ${user.description}
+📝 ایراد/ توضیحات:  ${user.description}
 
-📅 تاریخ و ساعت مورد نظر: ${user.date} | 🕐 ${user.time}`;
+📅 تاریخ و ساعت مورد نظر :  ${user.date} | 🕐 ${user.time}`;
 
       await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: STAFF_CHAT_ID,
           text: summary,
-          parse_mode: "Markdown",
+          // parse_mode را عمداً تنظیم نمی‌کنیم تا فاصله‌ها حفظ شوند
         }),
       });
 
-      await sendMessage(chatId, "✅ نوبت شما با موفقیت ثبت شد.\nاز همکاری شما سپاسگزاریم 🙏");
+      await sendMessage(chatId, '✅ نوبت شما با موفقیت ثبت شد.\nاز همکاری شما سپاسگزاریم 🙏');
       break;
   }
 
-  res.status(200).send("OK");
+  res.status(200).send('OK');
 }
